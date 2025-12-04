@@ -10,3 +10,10 @@ html5lib
 beautifulsoup4
 pytz
 python-dateutil
+sqlite3
+json
+datetime 
+datetime
+timedelta
+pytz
+plotly
