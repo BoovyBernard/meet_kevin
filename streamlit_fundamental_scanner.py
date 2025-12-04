@@ -4,282 +4,246 @@ import numpy as np
 import yfinance as yf
 import sqlite3
 import json
-import os
-import datetime
-from pathlib import Path
-import traceback
+from datetime import datetime, timedelta
+import pytz
+import plotly.express as px
 
+# --------------------------------------------------------
+# DATABASE SETUP
+# --------------------------------------------------------
+conn = sqlite3.connect("scanner_data.db", check_same_thread=False)
+cur = conn.cursor()
 
-# ============================================================
-# SAFE GETTER  (Fixes ALL .get() bugs permanently)
-# ============================================================
-def safe(x, key, default=None):
-    try:
-        if isinstance(x, dict):
-            return x.get(key, default)
-        if isinstance(x, pd.Series):
-            return x[key] if key in x else default
-        if hasattr(x, key):
-            return getattr(x, key)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol TEXT PRIMARY KEY
+)
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS scan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT,
+    timestamp TEXT,
+    score REAL,
+    data_json TEXT
+)
+""")
+conn.commit()
+
+# --------------------------------------------------------
+# STYLE
+# --------------------------------------------------------
+st.set_page_config(page_title="Fundamental Scanner", layout="wide")
+
+st.markdown("""
+<style>
+.metric-box {
+    padding: 15px;
+    border-radius: 12px;
+    background-color: #111111;
+    color: white;
+    border: 1px solid #333;
+    text-align: center;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --------------------------------------------------------
+# SAFE EXTRACTION HELPERS
+# --------------------------------------------------------
+def safe_dict(d, key, default=None):
+    if d is None:
         return default
+    return d[key] if key in d and d[key] not in ["", None, float("nan")] else default
+
+def safe_num(x):
+    try:
+        return float(x)
     except:
-        return default
+        return None
 
-
-# ============================================================
-# AI BUY/SELL RECOMMENDATION (NO OPENAI NEEDED)
-# ============================================================
-def ai_recommendation(score, pe, pb, fcf, ma_signal, rsi):
-    reasons = []
-
-    # fundamentals
-    if pe and pe > 0 and pe < 20:
-        reasons.append("PE ratio attractive")
-    if pb and pb < 3:
-        reasons.append("Price-to-book reasonable")
-    if fcf and fcf > 0:
-        reasons.append("Positive free cash flow")
-
-    # technicals
-    if ma_signal:
-        reasons.append("Trend bullish (MA50 > MA200)")
-    if rsi and rsi < 70:
-        reasons.append("RSI neutral (no overbought risk)")
-
-    # ----- Decision -----
-    if score >= 5:
-        decision = "BUY"
-    elif 3 <= score < 5:
-        decision = "WATCH / HOLD"
-    else:
-        decision = "SELL / AVOID"
-
-    # ----- Kevin-style commentary -----
-    kevin_note = ""
-    if decision == "BUY":
-        kevin_note = (
-            "🔥 *This looks like a classic Meet Kevin-style opportunity: solid fundamentals, "
-            "healthy cashflow, and technical confirmation.*"
-        )
-    elif decision == "WATCH / HOLD":
-        kevin_note = (
-            "⚠️ *This stock shows potential but needs more momentum or fundamental depth. "
-            "Put it on a watchlist; don't yolo in yet.*"
-        )
-    elif decision == "SELL / AVOID":
-        kevin_note = (
-            "🚫 *Risk not worth the reward. Fundamentals or technicals are not aligned.*"
-        )
-
-    return decision, reasons, kevin_note
-
-
-# ============================================================
-# SCANNER ENGINE
-# ============================================================
-def scan_stock(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        fast = stock.fast_info
-
-        result = {"ticker": ticker}
-
-        # ---- BASIC FUNDAMENTALS ----
-        result["market_cap"] = safe(fast, "market_cap")
-        result["pe"] = safe(fast, "pe_ratio")
-        result["pb"] = safe(fast, "price_to_book")
-        result["eps"] = safe(fast, "eps")
-        result["dividend_yield"] = safe(fast, "dividend_yield")
-
-        # ---- FINANCIAL STATEMENTS ----
-        try:
-            bal = stock.balance_sheet
-            fin = stock.financials
-            cf = stock.cashflow
-        except:
-            bal = fin = cf = None
-
-        result["revenue"] = safe(
-            bal.loc["Total Revenue"] if bal is not None and "Total Revenue" in bal.index else None,
-            0
-        )
-        result["net_income"] = safe(
-            fin.loc["Net Income"] if fin is not None and "Net Income" in fin.index else None,
-            0
-        )
-        result["free_cash_flow"] = safe(
-            cf.loc["Free Cash Flow"] if cf is not None and "Free Cash Flow" in cf.index else None,
-            0
-        )
-
-        # ---- TECHNICALS ----
-        hist = stock.history(period="1y")
-
-        if hist is None or len(hist) < 50:
-            result["ma_signal"] = False
-            result["rsi"] = None
-        else:
-            hist["MA50"] = hist["Close"].rolling(50).mean()
-            hist["MA200"] = hist["Close"].rolling(200).mean()
-
-            # RSI
-            delta = hist["Close"].diff()
-            gain = delta.where(delta > 0, 0).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss
-            hist["RSI"] = 100 - (100 / (1 + rs))
-
-            result["ma_signal"] = hist["MA50"].iloc[-1] > hist["MA200"].iloc[-1]
-            result["rsi"] = float(hist["RSI"].iloc[-1])
-
-        # ---- SCORE SYSTEM ----
-        score = 0
-        if result["pe"] and 0 < result["pe"] < 25: score += 1
-        if result["pb"] and result["pb"] < 3: score += 1
-        if result["eps"] and result["eps"] > 0: score += 1
-        if result["free_cash_flow"] and result["free_cash_flow"] > 0: score += 1
-        if result["ma_signal"]: score += 1
-        if result["rsi"] and result["rsi"] < 70: score += 1
-        result["score"] = score
-
-        # ---- AI RECOMMENDATION ----
-        decision, reasons, commentary = ai_recommendation(
-            score,
-            result["pe"],
-            result["pb"],
-            result["free_cash_flow"],
-            result["ma_signal"],
-            result["rsi"]
-        )
-
-        result["recommendation"] = decision
-        result["reasons"] = "; ".join(reasons)
-        result["kevin_note"] = commentary
-
-        return result
-
-    except Exception as e:
-        print("Error scanning:", ticker, e)
-        print(traceback.format_exc())
-        return {"ticker": ticker, "score": 0, "recommendation": "ERROR"}
-
-
-# ============================================================
-# SQLITE WATCHLIST
-# ============================================================
-def init_db():
-    conn = sqlite3.connect("watchlist.db")
-    conn.execute("CREATE TABLE IF NOT EXISTS watchlist (ticker TEXT PRIMARY KEY)")
-    conn.commit()
-    conn.close()
-
-def add_to_watchlist(ticker):
-    conn = sqlite3.connect("watchlist.db")
-    conn.execute("INSERT OR IGNORE INTO watchlist VALUES (?)", (ticker,))
-    conn.commit()
-    conn.close()
-
-def get_watchlist():
-    conn = sqlite3.connect("watchlist.db")
-    df = pd.read_sql("SELECT * FROM watchlist", conn)
-    conn.close()
+# --------------------------------------------------------
+# TECHNICAL INDICATORS
+# --------------------------------------------------------
+def compute_technicals(df):
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
     return df
 
+# --------------------------------------------------------
+# AI BUY/SELL RECOMMENDATION
+# --------------------------------------------------------
+def ai_recommendation(score, fundamentals, techs):
+    commentary = []
 
-# ============================================================
-# SCAN HISTORY (JSON FILES)
-# ============================================================
-def save_scan(df):
-    Path("scan_history").mkdir(exist_ok=True)
-    f = f"scan_history/{datetime.date.today()}.json"
-    df.to_json(f, orient="records")
+    if score >= 80:
+        grade = "STRONG BUY"
+        commentary.append("Strong revenue growth, high margins, and stable balance sheet.")
+    elif score >= 65:
+        grade = "BUY"
+        commentary.append("Good fundamentals with room for improvement.")
+    elif score >= 50:
+        grade = "HOLD"
+        commentary.append("Fair valuation but mixed indicators.")
+    else:
+        grade = "SELL"
+        commentary.append("Weak fundamentals or negative growth trends.")
 
-def load_history():
-    folder = Path("scan_history")
-    if not folder.exists():
-        return {}
-    history = {}
-    for file in folder.glob("*.json"):
-        date = file.stem
-        history[date] = pd.read_json(file)
-    return history
+    # Kevin-style commentary
+    if fundamentals.get("rev_growth") and fundamentals["rev_growth"] > 0:
+        commentary.append("🚀 Revenue trending upward — very Kevin-approved.")
+    else:
+        commentary.append("⚠ Revenue stagnation — Kevin would dig deeper.")
 
+    if techs.get("RSI") and techs["RSI"] < 30:
+        commentary.append("RSI oversold — potential reversal zone.")
+    elif techs.get("RSI") and techs["RSI"] > 70:
+        commentary.append("RSI overbought — caution.")
 
-# ============================================================
-# STREAMLIT UI
-# ============================================================
-st.set_page_config(layout="wide", page_title="Meet Kevin Fundamental Scanner")
+    return grade, " ".join(commentary)
 
-st.sidebar.title("📊 Navigation")
-page = st.sidebar.radio("Select Page", ["Scanner", "Watchlist", "History"])
+# --------------------------------------------------------
+# FUNDAMENTAL ANALYSIS (Kevin-style)
+# --------------------------------------------------------
+def analyze_symbol(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.get_info()
 
-init_db()
+        # Extract fundamentals safely
+        revenue = safe_dict(info, "totalRevenue")
+        gross_margin = safe_dict(info, "grossMargins")
+        profit_margin = safe_dict(info, "profitMargins")
+        debt_equity = safe_dict(info, "debtToEquity")
+        pe = safe_dict(info, "forwardPE")
 
-# ==========================================
+        hist = ticker.history(period="1y")
+        if hist.empty:
+            return None
+
+        hist = compute_technicals(hist)
+
+        # Scoring
+        score = 0
+        fundamentals = {}
+
+        if revenue:
+            fundamentals["revenue"] = revenue
+            score += 20
+
+        if gross_margin:
+            fundamentals["gross_margin"] = gross_margin
+            score += 15
+
+        if profit_margin:
+            fundamentals["profit_margin"] = profit_margin
+            score += 15
+
+        if debt_equity and debt_equity < 150:
+            score += 10
+
+        if pe and pe < 30:
+            score += 10
+
+        # Technical scoring
+        rsi_latest = hist["RSI"].iloc[-1]
+        fundamentals["rev_growth"] = safe_num(info.get("revenueGrowth"))
+
+        techs = {"RSI": rsi_latest}
+        if rsi_latest < 30:
+            score += 10
+        elif rsi_latest > 70:
+            score -= 5
+
+        # AI recommendation
+        grade, commentary = ai_recommendation(score, fundamentals, techs)
+
+        return {
+            "symbol": symbol,
+            "score": score,
+            "grade": grade,
+            "commentary": commentary,
+            "fundamentals": fundamentals,
+            "technicals": techs,
+            "history": hist
+        }
+
+    except Exception as e:
+        st.error(f"Error scanning {symbol}: {e}")
+        return None
+
+# --------------------------------------------------------
+# SAVE SCAN HISTORY
+# --------------------------------------------------------
+def save_history(res):
+    cur.execute("""
+        INSERT INTO scan_history (symbol, timestamp, score, data_json)
+        VALUES (?, ?, ?, ?)
+    """, (res["symbol"], datetime.now().isoformat(), res["score"], json.dumps(res)))
+    conn.commit()
+
+# --------------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------------
+page = st.sidebar.radio("Navigation", ["Scanner", "Scan History"])
+
+# --------------------------------------------------------
 # PAGE 1 — SCANNER
-# ==========================================
+# --------------------------------------------------------
 if page == "Scanner":
-    st.title("📈 Meet Kevin Fundamental Scanner + AI Recommendations")
+    st.title("📊 Fundamental Scanner — Kevin Style")
 
-    tickers = st.text_area("Enter tickers (comma separated)", "AAPL, MSFT, AMZN")
-    tickers = [t.strip().upper() for t in tickers.split(",")]
+    tickers = st.text_input("Enter tickers (comma separated):", "AAPL, MSFT, AMZN")
 
     if st.button("Run Scan"):
-        rows = [scan_stock(t) for t in tickers]
-        df = pd.DataFrame(rows).sort_values("score", ascending=False)
+        symbols = [t.strip().upper() for t in tickers.split(",")]
+        results = []
 
-        st.dataframe(df)
+        for sym in symbols:
+            res = analyze_symbol(sym)
+            if res:
+                save_history(res)
+                results.append(res)
 
-        save_scan(df)
+        if results:
+            df = pd.DataFrame([{
+                "Symbol": r["symbol"],
+                "Score": r["score"],
+                "AI Recommendation": r["grade"],
+                "Commentary": r["commentary"]
+            } for r in results])
 
-        st.subheader("Add to Watchlist")
-        for t in df["ticker"]:
-            if st.button(f"Add {t}", key=f"wl_{t}"):
-                add_to_watchlist(t)
-                st.success(f"{t} added.")
+            st.dataframe(df, use_container_width=True)
 
-# ==========================================
-# PAGE 2 — WATCHLIST
-# ==========================================
-elif page == "Watchlist":
-    st.title("⭐ Watchlist")
+# --------------------------------------------------------
+# PAGE 2 — SCAN HISTORY VIEWER
+# --------------------------------------------------------
+if page == "Scan History":
+    st.title("📜 Scan History Viewer")
 
-    w = get_watchlist()
-    st.dataframe(w)
+    cur.execute("SELECT symbol, timestamp, score, data_json FROM scan_history ORDER BY timestamp DESC")
+    rows = cur.fetchall()
 
-    if st.button("Rescan Watchlist"):
-        rows = [scan_stock(t) for t in w["ticker"]]
-        df = pd.DataFrame(rows).sort_values("score", ascending=False)
-        st.dataframe(df)
+    if rows:
+        hist_df = pd.DataFrame([{
+            "Symbol": r[0],
+            "Timestamp": r[1],
+            "Score": r[2],
+        } for r in rows])
 
-# ==========================================
-# PAGE 3 — HISTORY
-# ==========================================
-elif page == "History":
-    st.title("📅 Historical Scan Browser")
+        st.dataframe(hist_df)
 
-    history = load_history()
-    if not history:
-        st.info("No scan history yet.")
+        # Plot score over time
+        fig = px.line(hist_df, x="Timestamp", y="Score", color="Symbol", title="Score Over Time")
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
-        date_sel = st.selectbox("Select date", list(history.keys()))
-        df = history[date_sel]
-        st.dataframe(df)
+        st.info("No scan history found yet.")
 
-        # --- Score over Time ---
-        tickers = sorted({t for d in history.values() for t in d["ticker"]})
-        ticker_sel = st.selectbox("Select ticker to chart", tickers)
-
-        dates = []
-        scores = []
-        for d, df_day in history.items():
-            row = df_day[df_day["ticker"] == ticker_sel]
-            if not row.empty:
-                dates.append(d)
-                scores.append(int(row["score"].iloc[0]))
-
-        chart_df = pd.DataFrame({"date": dates, "score": scores})
-        chart_df["date"] = pd.to_datetime(chart_df["date"])
-        chart_df = chart_df.sort_values("date")
-
-        st.line_chart(chart_df.set_index("date"))
