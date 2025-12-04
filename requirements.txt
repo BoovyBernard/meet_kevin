@@ -2,8 +2,8 @@ streamlit
 yfinance
 pandas
 numpy
-plotly
-pytz
+sqlalchemy
+apscheduler
 requests
 lxml
 html5lib
