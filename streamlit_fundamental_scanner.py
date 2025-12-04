@@ -616,4 +616,3 @@ with col2:
 
 st.markdown("---")
 st.caption("Notes: Automatic daily scans only run while the Streamlit app process is running. Scheduled jobs will not scan while the app is stopped or sleeping. For always-on scanning, deploy to a server with the app kept running.")
-
