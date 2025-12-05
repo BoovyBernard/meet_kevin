@@ -1,10 +1,8 @@
 streamlit
-yfinance
-pandas
-numpy
-sqlalchemy
-apscheduler
+yfinance as yf
+pandas as pd
+numpy as np
 requests
-lxml
-html5lib
-beautifulsoup4
+BeautifulSoup
+datetime, timedelta
+warnings
