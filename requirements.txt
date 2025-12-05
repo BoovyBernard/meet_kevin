@@ -2,8 +2,9 @@ streamlit
 yfinance
 pandas
 numpy
+plotly
+pytz
 requests
-BeautifulSoup
-datetime
-timedelta
-warnings
+lxml
+html5lib
+beautifulsoup4
