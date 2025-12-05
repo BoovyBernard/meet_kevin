@@ -1,8 +1,9 @@
 streamlit
-yfinance as yf
-pandas as pd
-numpy as np
+yfinance
+pandas
+numpy
 requests
 BeautifulSoup
-datetime, timedelta
+datetime
+timedelta
 warnings
