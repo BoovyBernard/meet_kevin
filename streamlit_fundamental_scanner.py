@@ -816,8 +816,8 @@ def display_results(results):
     with tab1:
         try:
             st.dataframe(
-                df.style.background_gradient(subset=['Conviction'], cmap='RdYlGn', vmin=0, vmax=100)
-                        .format(precision=2),
+                df
+                        .style.format(precision=2),
                 column_config={
                    "Conviction": None, # Hide raw
                     "Conviction Label": st.column_config.TextColumn("Conviction"),
