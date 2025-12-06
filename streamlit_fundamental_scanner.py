@@ -788,6 +788,7 @@ def main():
         display_results(results)
 
 def display_results(results):
+    st.info(f"Displaying results for {len(results)} tickers.")
     # Convert to DataFrame for main view
     df_data = []
     
@@ -813,22 +814,24 @@ def display_results(results):
     tab1, tab2 = st.tabs(["📋 Scanner Table", "🃏 Detailed Cards"])
     
     with tab1:
-        # Styled Table with Pandas Styler
-        st.dataframe(
-            df.style.background_gradient(subset=['Conviction'], cmap='RdYlGn', vmin=0, vmax=100)
-                    .format(precision=2),
-            column_config={
-               "Conviction": None, # Hide raw
-                "Conviction Label": st.column_config.TextColumn("Conviction"),
-            },
-            hide_index=True,
-            use_container_width=True,
-            height=600
-        )
+        try:
+            st.dataframe(
+                df.style.background_gradient(subset=['Conviction'], cmap='RdYlGn', vmin=0, vmax=100)
+                        .format(precision=2),
+                column_config={
+                   "Conviction": None, # Hide raw
+                    "Conviction Label": st.column_config.TextColumn("Conviction"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                height=600
+            )
+        except Exception as e:
+            st.error(f"Error displaying table: {e}")
+            st.write("Raw Data:", df)
         
     with tab2:
         for r in results:
-            # Re-use existing card logic, adapted slightly
             with st.expander(f"**{r['ticker']}** - Conviction: {r['overall_score']} | Tech: {r['tech_score']}"):
                 col1, col2, col3 = st.columns(3)
                 
