@@ -734,7 +734,7 @@ def main():
             st.info(f"Loaded {len(tickers)} tickers for {asset_class}")
 
         st.divider()
-        run_fundamental = st.checkbox("Run Stock Fundamentals?", value=(asset_class in ["Stocks (Manual)", "S&P 500 Leaders", "US 30 (Dow)"]), 
+        run_fundamental = st.checkbox("Run Stock Fundamentals?", value=(asset_class in ["Stocks (Manual)", "S&P500", "US30", "NASDAQ", "Sectors"]), 
                                     help="Fetches financial statements. Only works for Stocks.")
         
         run_btn = st.button("🚀 Start Scan", type="primary")
@@ -753,17 +753,21 @@ def main():
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        failed_tickers = []
         for i, ticker in enumerate(tickers):
             status_text.text(f"Scanning {ticker}...")
             try:
                 res = analyze_ticker(ticker, run_fundamental=run_fundamental)
                 if "error" not in res:
                     results.append(res)
+                else:
+                    failed_tickers.append(ticker)
+                
                 # Rate limiting to prevent API throttling
                 time.sleep(0.5) 
             except Exception as e:
                 print(f"Error scanning {ticker}: {e}")
-                # Optional: keep going, maybe log it
+                failed_tickers.append(ticker)
                 pass
             
             progress_bar.progress((i + 1) / len(tickers))
@@ -771,8 +775,13 @@ def main():
         status_text.empty()
         progress_bar.empty()
         
+        if failed_tickers:
+            with st.expander(f"⚠️ {len(failed_tickers)} Tickers Failed (Click to see)", expanded=False):
+                st.write(", ".join(failed_tickers))
+                st.info("Failures are usually due to invalid tickers or API rate limits.")
+
         if not results:
-            st.warning("No results found.")
+            st.error("No valid results found. All tickers failed to fetch data.")
             return
 
         # Display Results
